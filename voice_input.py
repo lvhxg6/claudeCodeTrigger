@@ -64,7 +64,7 @@ class Config:
 
     # 键盘输入配置
     TYPING_DELAY = 0.01  # 每个字符输入延迟（秒）
-    AUTO_SUBMIT = True  # 是否自动按 Enter
+    AUTO_SUBMIT = False  # 是否自动按 Enter（改为 False，让用户自己检查后按回车）
 
     # 声音提示配置
     ENABLE_SOUND = True  # 是否启用声音提示
