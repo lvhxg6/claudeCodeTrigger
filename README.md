@@ -9,21 +9,64 @@
 - **⌨️ 自动输入**：模拟键盘输入，对 Claude Code 完全透明
 - **🚀 快捷触发**：支持全局快捷键，随时随地使用
 - **🔒 隐私保护**：完全本地运行，音频不上传
+- **🔊 声音反馈**：三个关键时刻播放提示音，清晰知道录音状态
+- **✅ 手动确认**：只输入文本不自动提交，让你检查后再按回车
+
+## 📋 快速参考
+
+### 常用配置速查
+
+| 配置项 | 默认值 | 说明 | 修改建议 |
+|--------|--------|------|----------|
+| `WHISPER_LANGUAGE` | `"zh"` | 识别语言 | 中文用 `"zh"`，英文用 `"en"` |
+| `VAD_MODE` | `3` | 语音检测严格度 | 嘈杂环境用 `3`，安静环境可用 `2` |
+| `SILENCE_THRESHOLD` | `1.5` | 静音多久停止（秒） | 说话慢用 `2.0`，说话快用 `1.0` |
+| `AUTO_SUBMIT` | `False` | 是否自动按回车 | 建议保持 `False`，手动确认更安全 |
+| `ENABLE_SOUND` | `True` | 是否启用提示音 | 不需要提示音可改为 `False` |
+| `TYPING_DELAY` | `0.01` | 输入延迟（秒） | 输入太快出错可改为 `0.02` |
+
+### 声音文件速查
+
+| 声音 | 文件路径 | 特点 |
+|------|----------|------|
+| Tink | `/System/Library/Sounds/Tink.aiff` | 清脆的"叮"声，推荐用于开始/结束 |
+| Pop | `/System/Library/Sounds/Pop.aiff` | 爆破声，推荐用于检测到语音 |
+| Ping | `/System/Library/Sounds/Ping.aiff` | 乒乓声，轻快 |
+| Hero | `/System/Library/Sounds/Hero.aiff` | 英雄音效，有气势 |
+| Glass | `/System/Library/Sounds/Glass.aiff` | 玻璃碎裂声，明显 |
+
+### 常见问题速查
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| 未检测到语音 | VAD 太严格 | 降低 `VAD_MODE` 到 `2` 或 `1` |
+| 录音时间太长 | 环境噪音大 | 提高 `VAD_MODE` 到 `3`，或减少 `SILENCE_THRESHOLD` |
+| 识别不准确 | 语言设置错误 | 检查 `WHISPER_LANGUAGE` 是否正确 |
+| 输入太快出错 | 延迟太短 | 增加 `TYPING_DELAY` 到 `0.02` |
+| 不想自动提交 | `AUTO_SUBMIT = True` | 改为 `False`（已默认关闭） |
 
 ## 🎯 工作原理
 
 ```
 快捷键触发
    ↓
-录音 (pyaudio + VAD)
+🎙️ 开始录音 (播放提示音)
+   ↓
+🗣️ 检测到语音 (播放提示音)
+   ↓
+录音 + VAD 静音检测
+   ↓
+🔇 静音 1.5 秒，停止录音 (播放提示音)
    ↓
 调用 Whisper API (http://localhost:8765/v1)
    ↓
 获取转录文本
    ↓
+验证文本是否有效（非空、非纯空白）
+   ↓
 模拟键盘输入 (pynput)
    ↓
-自动按 Enter 提交
+✅ 完成（不自动按回车，让你检查后手动提交）
 ```
 
 ## 📦 安装
@@ -57,10 +100,12 @@ voice-input
 ```
 
 然后：
-1. 看到 "🎙️ 开始录音，请说话..." 提示
-2. 开始说话
-3. 说完后保持安静 1.5 秒
-4. 自动转录并输入到当前应用
+1. 🎙️ 听到"叮"声，看到 "开始录音，请说话..." 提示
+2. 🗣️ 开始说话，听到"啵"声表示检测到语音
+3. 🔇 说完后保持安静 1.5 秒，听到"叮"声表示录音结束
+4. 🧠 系统自动转录
+5. ⌨️ 文本自动输入到当前应用
+6. ✅ **检查识别结果，手动按回车提交**
 
 ### 方式 2：配置全局快捷键（推荐）
 
@@ -90,25 +135,111 @@ end)
 
 ## ⚙️ 配置说明
 
-编辑 `voice_input.py` 中的 `Config` 类：
+编辑 `voice_input.py` 中的 `Config` 类（第 44-73 行）：
 
 ```python
 class Config:
     # Whisper 服务配置
     WHISPER_API_URL = "http://localhost:8765/v1/audio/transcriptions"
-    WHISPER_LANGUAGE = "zh"  # 语言：zh=中文, en=英文
+    WHISPER_LANGUAGE = "zh"  # 语言：zh=中文, en=英文, auto=自动检测
+
+    # 音频录制配置
+    SAMPLE_RATE = 16000  # 采样率（Whisper 推荐 16kHz）
+    CHANNELS = 1  # 声道数（1=单声道，2=立体声）
+    CHUNK_DURATION_MS = 30  # 每个音频块时长（毫秒）
+    PADDING_DURATION_MS = 300  # 静音前后填充时长（毫秒）
 
     # VAD 配置
-    VAD_MODE = 3  # 0-3，3 最严格（减少误触发）
+    VAD_MODE = 3  # 0-3，数字越大越严格
+                  # 0: 最宽松（容易误触发，但不会漏掉语音）
+                  # 1: 宽松
+                  # 2: 适中
+                  # 3: 最严格（推荐，减少误触发）
 
     # 录音控制
-    MAX_RECORDING_SECONDS = 60  # 最长录音时间
-    SILENCE_THRESHOLD = 1.5  # 连续静音 1.5 秒后停止
-    MIN_RECORDING_SECONDS = 0.5  # 最短录音时间
+    MAX_RECORDING_SECONDS = 60  # 最长录音时间（秒）
+    SILENCE_THRESHOLD = 1.5  # 连续静音多少秒后停止录音
+    MIN_RECORDING_SECONDS = 0.5  # 最短录音时间（秒，避免误触发）
 
     # 键盘输入配置
     TYPING_DELAY = 0.01  # 每个字符输入延迟（秒）
-    AUTO_SUBMIT = True  # 是否自动按 Enter
+    AUTO_SUBMIT = False  # 是否自动按 Enter
+                         # False: 只输入文本，让你检查后手动按回车
+                         # True: 自动按回车提交
+
+    # 声音提示配置
+    ENABLE_SOUND = True  # 是否启用声音提示
+    SOUND_START = "/System/Library/Sounds/Tink.aiff"      # 开始录音提示音
+    SOUND_DETECTED = "/System/Library/Sounds/Pop.aiff"    # 检测到语音提示音
+    SOUND_END = "/System/Library/Sounds/Tink.aiff"        # 结束录音提示音
+```
+
+### 🔊 声音提示配置详解
+
+系统在三个关键时刻播放提示音：
+
+| 时机 | 配置项 | 默认声音 | 说明 |
+|------|--------|----------|------|
+| 🎙️ 开始录音 | `SOUND_START` | Tink.aiff | 按下快捷键后立即播放 |
+| 🗣️ 检测到语音 | `SOUND_DETECTED` | Pop.aiff | VAD 检测到有效语音时播放 |
+| 🔇 结束录音 | `SOUND_END` | Tink.aiff | 静音超过阈值，停止录音时播放 |
+
+#### macOS 系统可用声音列表
+
+```bash
+# 查看所有系统声音
+ls /System/Library/Sounds/
+
+# 常用声音文件：
+/System/Library/Sounds/Basso.aiff       # 低沉的"咚"声
+/System/Library/Sounds/Blow.aiff        # 吹气声
+/System/Library/Sounds/Bottle.aiff      # 瓶子声
+/System/Library/Sounds/Frog.aiff        # 青蛙叫声
+/System/Library/Sounds/Funk.aiff        # 放克音效
+/System/Library/Sounds/Glass.aiff       # 玻璃碎裂声
+/System/Library/Sounds/Hero.aiff        # 英雄音效
+/System/Library/Sounds/Morse.aiff       # 摩斯电码声
+/System/Library/Sounds/Ping.aiff        # 乒乓声
+/System/Library/Sounds/Pop.aiff         # 爆破声（推荐）
+/System/Library/Sounds/Purr.aiff        # 猫叫声
+/System/Library/Sounds/Sosumi.aiff      # 经典 Mac 声音
+/System/Library/Sounds/Submarine.aiff   # 潜水艇声
+/System/Library/Sounds/Tink.aiff        # 清脆的"叮"声（推荐）
+```
+
+#### 试听声音
+
+```bash
+# 试听某个声音
+afplay /System/Library/Sounds/Pop.aiff
+
+# 试听所有声音
+for sound in /System/Library/Sounds/*.aiff; do
+    echo "Playing: $(basename $sound)"
+    afplay "$sound"
+    sleep 0.5
+done
+```
+
+#### 自定义声音
+
+你也可以使用自己的音频文件：
+
+```python
+# 使用自定义声音文件
+SOUND_START = "/Users/你的用户名/Music/my_start_sound.aiff"
+SOUND_DETECTED = "/Users/你的用户名/Music/my_detected_sound.mp3"
+SOUND_END = "/Users/你的用户名/Music/my_end_sound.wav"
+```
+
+支持的格式：`.aiff`, `.wav`, `.mp3`, `.m4a` 等 macOS 支持的音频格式。
+
+#### 关闭声音提示
+
+如果不需要声音提示：
+
+```python
+ENABLE_SOUND = False  # 关闭所有声音提示
 ```
 
 ## 🔍 键盘输入模拟详解
@@ -278,6 +409,41 @@ claudeCodeTrigger/
 - **claudeCodeTrigger**：客户端，调用 API 并模拟输入
 
 两者配合使用，互不影响。
+
+## 📝 更新日志
+
+### v1.1.0 (2026-01-21)
+
+**新增功能：**
+- ✅ 添加声音提示反馈系统
+  - 开始录音时播放提示音
+  - 检测到语音时播放提示音
+  - 结束录音时播放提示音
+  - 可自定义声音文件或关闭提示音
+
+**改进：**
+- ✅ 关闭自动回车功能（`AUTO_SUBMIT = False`）
+  - 现在只输入文本，不自动提交
+  - 让用户检查识别结果后手动按回车
+  - 避免误识别导致执行错误命令
+
+- ✅ 添加文本验证
+  - 检查转录结果是否为空或仅包含空白字符
+  - 如果没有有效文本，跳过输入并显示警告
+  - 防止空内容被输入和提交
+
+**修复：**
+- 🐛 修复空文本输入 bug
+  - 之前：即使没有识别到有效语音，也会按回车，导致终端执行空命令
+  - 现在：验证文本有效性，无效文本不会输入
+
+### v1.0.0 (2026-01-21)
+
+**初始版本：**
+- 🎙️ 智能录音 + VAD 静音检测
+- 🧠 本地 Whisper 转录
+- ⌨️ 键盘输入模拟
+- 🚀 全局快捷键支持
 
 ## 📄 许可证
 
