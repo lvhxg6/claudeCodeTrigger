@@ -5,10 +5,10 @@
 # ===========================================
 stt:
   # 引擎选择: "whisper" 或 "funasr"
-  engine: "whisper"
+  engine: "funasr"
 
   # 流式模式（仅 FunASR 支持）
-  streaming: false
+  streaming: true
 
 # ===========================================
 # Whisper 服务配置
