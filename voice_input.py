@@ -439,28 +439,24 @@ class FunASRStreamingClient:
         logger.info("✅ WebSocket 连接成功")
 
     async def send_audio_chunk(self, chunk: bytes, is_final: bool = False):
-        """发送音频块"""
+        """发送音频块（原始 PCM 数据）"""
         if not self.ws:
             raise RuntimeError("WebSocket 未连接")
 
-        # 将 PCM 数据转换为 WAV 格式
-        import io
-        wav_buffer = io.BytesIO()
-        with wave.open(wav_buffer, 'wb') as wav_file:
-            wav_file.setnchannels(self.config.CHANNELS)
-            wav_file.setsampwidth(2)  # 16-bit = 2 bytes
-            wav_file.setframerate(self.config.SAMPLE_RATE)
-            wav_file.writeframes(chunk)
-        wav_data = wav_buffer.getvalue()
-
-        # Base64 编码 WAV 音频数据
-        audio_base64 = base64.b64encode(wav_data).decode()
+        # 直接 Base64 编码原始 PCM 数据（不添加 WAV 头）
+        audio_base64 = base64.b64encode(chunk).decode()
 
         # 发送消息
         await self.ws.send(json.dumps({
             "type": "audio",
             "data": audio_base64,
-            "is_final": is_final
+            "is_final": is_final,
+            # 添加音频格式信息
+            "format": {
+                "sample_rate": self.config.SAMPLE_RATE,
+                "channels": self.config.CHANNELS,
+                "sample_width": 2  # 16-bit
+            }
         }))
 
     async def receive_result(self) -> Optional[str]:
@@ -469,8 +465,8 @@ class FunASRStreamingClient:
             return None
 
         try:
-            # 等待接收消息（超时 0.1 秒）
-            result = await asyncio.wait_for(self.ws.recv(), timeout=0.1)
+            # 等待接收消息（超时 1.0 秒）
+            result = await asyncio.wait_for(self.ws.recv(), timeout=1.0)
             data = json.loads(result)
 
             if data.get("type") == "error":
