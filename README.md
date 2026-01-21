@@ -135,7 +135,56 @@ end)
 
 ## ⚙️ 配置说明
 
-编辑 `voice_input.py` 中的 `Config` 类（第 44-73 行）：
+### 配置文件方式（推荐）
+
+从 v2.0.0 开始，支持通过 `config.yaml` 配置文件进行配置。编辑 `config.yaml`：
+
+```yaml
+# STT 引擎配置
+stt:
+  engine: "whisper"  # 可选: "whisper" 或 "funasr"
+  streaming: false   # 流式模式（仅 FunASR 支持）
+
+# Whisper 配置
+whisper:
+  api_url: "http://localhost:8765/v1/audio/transcriptions"
+  language: "zh"  # zh=中文, en=英文, null=自动检测
+
+# FunASR 配置（可选）
+funasr:
+  api_url: "http://localhost:10095/v1/audio/transcriptions"
+  ws_url: "ws://localhost:10095/ws/transcribe"
+
+# 音频录制配置
+audio:
+  sample_rate: 16000
+  channels: 1
+  chunk_duration_ms: 30
+  padding_duration_ms: 300
+
+# VAD 配置
+vad:
+  mode: 3  # 0-3，3 最严格
+  silence_threshold: 1.5
+  min_recording_seconds: 0.5
+  max_recording_seconds: 60
+
+# 键盘输入配置
+keyboard:
+  typing_delay: 0.01
+  auto_submit: false
+
+# 声音提示配置
+sound:
+  enabled: true
+  start: "/System/Library/Sounds/Tink.aiff"
+  detected: "/System/Library/Sounds/Pop.aiff"
+  end: "/System/Library/Sounds/Tink.aiff"
+```
+
+### 代码配置方式（兼容旧版本）
+
+也可以直接编辑 `voice_input.py` 中的 `Config` 类：
 
 ```python
 class Config:
@@ -173,6 +222,37 @@ class Config:
     SOUND_DETECTED = "/System/Library/Sounds/Pop.aiff"    # 检测到语音提示音
     SOUND_END = "/System/Library/Sounds/Tink.aiff"        # 结束录音提示音
 ```
+
+### 🚀 FunASR 流式识别（新功能）
+
+支持使用 FunASR 进行流式语音识别，实现边说边出文字的效果：
+
+**特点**：
+- **实时性更强**：延迟 200-500ms（vs Whisper 的 2.5-3.5s）
+- **边说边出**：文字实时显示，无需等待说完
+- **本地部署**：完全免费，无需联网
+
+**使用方法**：
+
+1. 安装 FunASR 服务（参见 [claudeCodeFunasr](../claudeCodeFunasr)）
+2. 启动 FunASR 服务：`funasr-service start`
+3. 修改 `config.yaml`：
+   ```yaml
+   stt:
+     engine: "funasr"
+     streaming: true  # 启用流式模式
+   ```
+4. 运行 `voice-input`，体验实时识别
+
+**对比**：
+
+| 特性 | Whisper | FunASR（非流式） | FunASR（流式） |
+|------|---------|------------------|----------------|
+| 延迟 | 2.5-3.5s | 1-2s | 0.2-0.5s |
+| 实时性 | ❌ | ❌ | ✅ |
+| 中文识别 | ✅ | ✅ | ✅ |
+| 英文识别 | ✅ | ✅ | ✅ |
+| 本地部署 | ✅ | ✅ | ✅ |
 
 ### 🔊 声音提示配置详解
 
