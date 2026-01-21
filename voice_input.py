@@ -443,8 +443,18 @@ class FunASRStreamingClient:
         if not self.ws:
             raise RuntimeError("WebSocket 未连接")
 
-        # Base64 编码音频数据
-        audio_base64 = base64.b64encode(chunk).decode()
+        # 将 PCM 数据转换为 WAV 格式
+        import io
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, 'wb') as wav_file:
+            wav_file.setnchannels(self.config.CHANNELS)
+            wav_file.setsampwidth(2)  # 16-bit = 2 bytes
+            wav_file.setframerate(self.config.SAMPLE_RATE)
+            wav_file.writeframes(chunk)
+        wav_data = wav_buffer.getvalue()
+
+        # Base64 编码 WAV 音频数据
+        audio_base64 = base64.b64encode(wav_data).decode()
 
         # 发送消息
         await self.ws.send(json.dumps({
