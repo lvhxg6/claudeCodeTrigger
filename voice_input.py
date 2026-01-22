@@ -431,6 +431,7 @@ class FunASRStreamingClient:
         self.config = config
         self.ws = None
         self.last_text = ""
+        self.output_char_count = 0  # 已输出的字符数
         # 协程间通信
         self.stop_event = asyncio.Event()  # 停止信号
         self.result_queue = asyncio.Queue()  # 结果队列
@@ -511,13 +512,14 @@ class FunASRStreamingClient:
 
                 new_text = data.get("text", "")
 
-                # 计算增量（只返回新增的部分）
-                if new_text.startswith(self.last_text):
-                    increment = new_text[len(self.last_text):]
+                # 简单的增量计算：只输出超过已输出字符数的新字符
+                # 这样即使模型修正了之前的文字，也不会重复输出
+                if len(new_text) > self.output_char_count:
+                    increment = new_text[self.output_char_count:]
+                    self.output_char_count = len(new_text)
                 else:
-                    # 如果不是前缀，说明有修正，返回完整文本
-                    increment = new_text
-                    self.last_text = ""
+                    # 模型修正导致文本变短或不变，不输出
+                    increment = ""
 
                 self.last_text = new_text
 
