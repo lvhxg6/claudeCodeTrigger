@@ -31,7 +31,7 @@ from pynput.keyboard import Controller, Key
 
 # 配置日志
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -497,11 +497,13 @@ class FunASRStreamingClient:
 
     async def receive_loop(self):
         """持续接收识别结果的协程"""
+        logger.debug("接收协程启动")
         while not self.stop_event.is_set():
             try:
                 # 短超时，确保能及时响应 stop_event
                 result = await asyncio.wait_for(self.ws.recv(), timeout=0.1)
                 data = json.loads(result)
+                logger.debug(f"收到服务端消息: {data}")
 
                 if data.get("type") == "error":
                     logger.error(f"服务端错误: {data.get('error')}")
@@ -520,16 +522,18 @@ class FunASRStreamingClient:
                 self.last_text = new_text
 
                 if increment:
+                    logger.info(f"📝 识别增量: {increment}")
                     await self.result_queue.put(increment)
 
             except asyncio.TimeoutError:
                 continue  # 无数据，继续循环
             except websockets.exceptions.ConnectionClosed:
-                logger.info("WebSocket 连接已关闭")
+                logger.info("WebSocket 连接已关闭（接收协程）")
                 break
             except Exception as e:
                 logger.error(f"接收消息失败: {e}")
                 break
+        logger.debug("接收协程退出")
 
     async def close(self):
         """关闭连接"""
@@ -681,12 +685,14 @@ async def main_streaming():
 
         # 启动输出协程：从队列获取增量文本并输入
         async def output_loop():
+            logger.debug("输出协程启动")
             while not streaming_client.stop_event.is_set():
                 try:
                     increment = await asyncio.wait_for(
                         streaming_client.result_queue.get(),
                         timeout=0.1
                     )
+                    logger.debug(f"输出协程收到文本: {increment}")
                     for char in increment:
                         typer.keyboard.type(char)
                         if config.TYPING_DELAY > 0:
@@ -695,6 +701,7 @@ async def main_streaming():
                     continue
                 except asyncio.CancelledError:
                     break
+            logger.debug("输出协程退出")
 
         output_task = asyncio.create_task(output_loop())
 
@@ -756,8 +763,34 @@ async def main_streaming():
             if audio:
                 audio.terminate()
 
-        # 等待最终结果（给服务端一点时间返回最后的识别结果）
-        await asyncio.sleep(0.5)
+        # 等待最终结果（服务端推理可能需要几秒钟）
+        # 持续等待直到超时或收到结果
+        wait_start = time.time()
+        max_wait_time = 15.0  # 最多等待 15 秒（FunASR CPU 推理可能需要 8+ 秒）
+        last_result_time = time.time()
+        idle_timeout = 10.0  # 等待服务端推理完成（FunASR CPU 推理需要约 8 秒）
+
+        logger.info("⏳ 等待服务端返回最终识别结果...")
+
+        while time.time() - wait_start < max_wait_time:
+            try:
+                increment = await asyncio.wait_for(
+                    streaming_client.result_queue.get(),
+                    timeout=0.1
+                )
+                if increment:
+                    logger.info(f"📝 收到识别结果: {increment}")
+                    for char in increment:
+                        typer.keyboard.type(char)
+                        if config.TYPING_DELAY > 0:
+                            await asyncio.sleep(config.TYPING_DELAY)
+                    last_result_time = time.time()
+            except asyncio.TimeoutError:
+                # 检查是否已经空闲超过 idle_timeout
+                if time.time() - last_result_time >= idle_timeout:
+                    logger.debug("空闲超时，停止等待")
+                    break
+                continue
 
         # 设置停止信号
         streaming_client.stop_event.set()
