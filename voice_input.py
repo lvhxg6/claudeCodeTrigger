@@ -431,6 +431,9 @@ class FunASRStreamingClient:
         self.config = config
         self.ws = None
         self.last_text = ""
+        # 协程间通信
+        self.stop_event = asyncio.Event()  # 停止信号
+        self.result_queue = asyncio.Queue()  # 结果队列
 
     async def connect(self):
         """建立 WebSocket 连接"""
@@ -465,8 +468,8 @@ class FunASRStreamingClient:
             return None
 
         try:
-            # 等待接收消息（超时 1.0 秒）
-            result = await asyncio.wait_for(self.ws.recv(), timeout=1.0)
+            # 等待接收消息（超时 5.0 秒，给服务端足够的推理时间）
+            result = await asyncio.wait_for(self.ws.recv(), timeout=5.0)
             data = json.loads(result)
 
             if data.get("type") == "error":
@@ -491,6 +494,42 @@ class FunASRStreamingClient:
         except Exception as e:
             logger.error(f"❌ 接收消息失败: {e}")
             return None
+
+    async def receive_loop(self):
+        """持续接收识别结果的协程"""
+        while not self.stop_event.is_set():
+            try:
+                # 短超时，确保能及时响应 stop_event
+                result = await asyncio.wait_for(self.ws.recv(), timeout=0.1)
+                data = json.loads(result)
+
+                if data.get("type") == "error":
+                    logger.error(f"服务端错误: {data.get('error')}")
+                    continue
+
+                new_text = data.get("text", "")
+
+                # 计算增量（只返回新增的部分）
+                if new_text.startswith(self.last_text):
+                    increment = new_text[len(self.last_text):]
+                else:
+                    # 如果不是前缀，说明有修正，返回完整文本
+                    increment = new_text
+                    self.last_text = ""
+
+                self.last_text = new_text
+
+                if increment:
+                    await self.result_queue.put(increment)
+
+            except asyncio.TimeoutError:
+                continue  # 无数据，继续循环
+            except websockets.exceptions.ConnectionClosed:
+                logger.info("WebSocket 连接已关闭")
+                break
+            except Exception as e:
+                logger.error(f"接收消息失败: {e}")
+                break
 
     async def close(self):
         """关闭连接"""
@@ -601,13 +640,16 @@ def main_batch():
 
 
 async def main_streaming():
-    """主函数（流式模式）"""
+    """主函数（流式模式）- 使用协程分离解决延迟问题"""
     config = Config()
 
     # 初始化组件
-    recorder = VoiceRecorder(config)
     streaming_client = FunASRStreamingClient(config)
     typer = KeyboardTyper(config)
+
+    # 音频相关变量
+    audio = None
+    stream = None
 
     try:
         # 1. 连接到流式服务
@@ -630,12 +672,36 @@ async def main_streaming():
         )
 
         vad = webrtcvad.Vad(config.VAD_MODE)
-        triggered = False
-        silence_start = None
-        start_time = time.time()
 
         # 等待一小段时间，确保焦点在正确的窗口
         time.sleep(0.2)
+
+        # 启动接收协程
+        recv_task = asyncio.create_task(streaming_client.receive_loop())
+
+        # 启动输出协程：从队列获取增量文本并输入
+        async def output_loop():
+            while not streaming_client.stop_event.is_set():
+                try:
+                    increment = await asyncio.wait_for(
+                        streaming_client.result_queue.get(),
+                        timeout=0.1
+                    )
+                    for char in increment:
+                        typer.keyboard.type(char)
+                        if config.TYPING_DELAY > 0:
+                            await asyncio.sleep(config.TYPING_DELAY)
+                except asyncio.TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    break
+
+        output_task = asyncio.create_task(output_loop())
+
+        # 主循环：发送音频 + 静音检测（不再阻塞等待接收）
+        triggered = False
+        silence_start = None
+        start_time = time.time()
 
         try:
             while True:
@@ -643,6 +709,8 @@ async def main_streaming():
                 elapsed = time.time() - start_time
                 if elapsed > config.MAX_RECORDING_SECONDS:
                     logger.warning("⏱️  录音超时，自动停止")
+                    # 发送结束信号
+                    await streaming_client.send_audio_chunk(b'', is_final=True)
                     break
 
                 # 读取音频块
@@ -660,16 +728,7 @@ async def main_streaming():
                     # 发送音频块到服务端
                     await streaming_client.send_audio_chunk(chunk, is_final=False)
 
-                    # 接收识别结果
-                    increment = await streaming_client.receive_result()
-                    if increment:
-                        # 实时输入增量文本
-                        for char in increment:
-                            typer.keyboard.type(char)
-                            if config.TYPING_DELAY > 0:
-                                time.sleep(config.TYPING_DELAY)
-
-                    # 检测静音
+                    # 检测静音（不再被接收阻塞！）
                     if is_speech:
                         silence_start = None
                     else:
@@ -683,24 +742,46 @@ async def main_streaming():
                                     logger.info(f"🔇 检测到 {silence_duration:.1f}s 静音，停止录音")
                                     play_sound(config.SOUND_END, config)
 
-                                    # 发送最后一块音频
+                                    # 发送结束信号
                                     await streaming_client.send_audio_chunk(b'', is_final=True)
-
-                                    # 等待最终结果
-                                    await asyncio.sleep(0.5)
-                                    final_increment = await streaming_client.receive_result()
-                                    if final_increment:
-                                        for char in final_increment:
-                                            typer.keyboard.type(char)
-                                            if config.TYPING_DELAY > 0:
-                                                time.sleep(config.TYPING_DELAY)
-
                                     break
 
+                # 让出控制权，让接收和输出协程有机会运行
+                await asyncio.sleep(0)
+
         finally:
-            stream.stop_stream()
-            stream.close()
-            audio.terminate()
+            if stream:
+                stream.stop_stream()
+                stream.close()
+            if audio:
+                audio.terminate()
+
+        # 等待最终结果（给服务端一点时间返回最后的识别结果）
+        await asyncio.sleep(0.5)
+
+        # 设置停止信号
+        streaming_client.stop_event.set()
+
+        # 处理队列中剩余的结果
+        while not streaming_client.result_queue.empty():
+            try:
+                increment = streaming_client.result_queue.get_nowait()
+                for char in increment:
+                    typer.keyboard.type(char)
+                    if config.TYPING_DELAY > 0:
+                        await asyncio.sleep(config.TYPING_DELAY)
+            except asyncio.QueueEmpty:
+                break
+
+        # 取消协程任务
+        recv_task.cancel()
+        output_task.cancel()
+
+        # 等待任务完成
+        try:
+            await asyncio.gather(recv_task, output_task, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
 
         # 检查是否录到有效语音
         if not triggered:
@@ -723,6 +804,8 @@ async def main_streaming():
         traceback.print_exc()
         return 1
     finally:
+        # 确保资源被清理
+        streaming_client.stop_event.set()
         await streaming_client.close()
 
 
